@@ -35,12 +35,10 @@ vector_store = FAISS(
 )
 
 def format_docs(docs):
-  return "\n\n".join(doc.page_content for doc in docs)
+    return "\n\n".join(doc.page_content for doc in docs)
 
 @cl.password_auth_callback
 def auth_callback(username: str, password: str):
-    # Fetch the user matching username from your database
-    # and compare the hashed password with the value stored in the database
     if (username, password) == ("admin", "admin"):
         return cl.User(
             identifier="admin", metadata={"role": "admin", "provider": "credentials"}
@@ -55,24 +53,23 @@ async def set_starters():
             label="Explain a privacy policy",
             message="Explain the privacy policy of facebook.com to me in simple terms. I'm not sure what it means.",
             icon="/public/contract.svg",
-            ),
-
+        ),
         cl.Starter(
             label="Be my lawyer",
             message="I need help writing a contract for a freelance project. Can you help me draft one?",
             icon="/public/law.svg",
-            ),
+        ),
         cl.Starter(
             label="Python script for daily email reports",
             message="Write a script to automate sending daily email reports in Python, and walk me through how I would set it up.",
             icon="/public/terminal.svg",
-            ),
+        ),
         cl.Starter(
             label="Text inviting friend to wedding",
             message="Write a text asking a friend to be my plus-one at a wedding next month. I want to keep it super short and casual, and offer an out.",
             icon="/public/write.svg",
-            )
-        ]
+        ),
+    ]
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -82,9 +79,6 @@ def start_chat():
         "message_history",
         [{"role": "system", "content": "You are a helpful legal assistant for lawyers and civilians from India."}],
     )
-
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
 
 @cl.on_message
 async def main(message: cl.Message):
@@ -115,12 +109,44 @@ async def main(message: cl.Message):
 
         response = rag_chain.invoke(message.content)
 
-        message = cl.Message(content=response)
+        # Step 1: Ask GPT-4o to critically analyze the response
+        critique_prompt = f"""
+        Critically analyze the following response:
+        {response}
 
-        await message.send()
+        Provide concise points for improvement, including:
+        - Any unclear or redundant information
+        - Ethical biases that should be avoided
+        - Additional clarifications that could enhance understanding
+        - Suggestions to improve the overall quality
+        """
+        critique_response = await client.chat.completions.create(
+            messages=[{"role": "user", "content": critique_prompt}],
+            **settings
+        )
 
+        critique_points = critique_response.choices[0].message.content
+
+        # Step 2: Ask GPT-4o to refine the response
+        refinement_prompt = f"""
+        Based on the original response and the following critique:
+        {critique_points}
+
+        Provide a final improved response:
+        {response}
+        """
+        final_response = await client.chat.completions.create(
+            messages=[{"role": "user", "content": refinement_prompt}],
+            **settings
+        )
+
+        final_content = final_response.choices[0].message.content
+        final_message = cl.Message(content=final_content)
+
+        await final_message.send()
         return
-    
+
+    # Handle non-PDF messages
     message_history = cl.user_session.get("message_history")
     message_history.append({"role": "user", "content": message.content})
 
@@ -135,5 +161,37 @@ async def main(message: cl.Message):
             await msg.stream_token(token)
 
     message_history.append({"role": "assistant", "content": msg.content})
-    await msg.update()
 
+    # Step 3: Perform critical analysis and refinement for regular messages
+    critique_prompt = f"""
+    Critically analyze the following response:
+    {msg.content}
+
+    Provide concise points for improvement, including:
+    - Any unclear or redundant information
+    - Ethical biases that should be avoided
+    - Additional clarifications that could enhance understanding
+    - Suggestions to improve the overall quality
+    """
+    critique_response = await client.chat.completions.create(
+        messages=[{"role": "user", "content": critique_prompt}],
+        **settings
+    )
+
+    critique_points = critique_response.choices[0].message.content
+
+    refinement_prompt = f"""
+    Based on the original response and the following critique:
+    {critique_points}
+
+    Provide a final improved response:
+    {msg.content}
+    """
+    final_response = await client.chat.completions.create(
+        messages=[{"role": "user", "content": refinement_prompt}],
+        **settings
+    )
+
+    final_content = final_response.choices[0].message.content
+    msg.content = final_content
+    await msg.update()
